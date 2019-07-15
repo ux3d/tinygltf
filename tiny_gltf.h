@@ -1076,7 +1076,7 @@ class TinyGLTF {
 #pragma clang diagnostic ignored "-Wc++98-compat"
 #endif
 
-  TinyGLTF() : bin_data_(nullptr), bin_size_(0), is_binary_(false) {}
+  TinyGLTF(bool load_files = true) : bin_data_(nullptr), bin_size_(0), is_binary_(false), load_files_(load_files) {}
 
 #ifdef __clang__
 #pragma clang diagnostic pop
@@ -1167,6 +1167,7 @@ class TinyGLTF {
   const unsigned char *bin_data_;
   size_t bin_size_;
   bool is_binary_;
+  bool load_files_;
 
   FsCallbacks fs = {
 #ifndef TINYGLTF_NO_FS
@@ -3081,7 +3082,8 @@ static bool ParseBuffer(Buffer *buffer, std::string *err, const json &o,
                         FsCallbacks *fs, const std::string &basedir,
                         bool is_binary = false,
                         const unsigned char *bin_data = nullptr,
-                        size_t bin_size = 0) {
+                        size_t bin_size = 0,
+                        bool resolve_data = true) {
   size_t byteLength;
   if (!ParseUnsignedProperty(&byteLength, err, o, "byteLength", true,
                              "Buffer")) {
@@ -3109,71 +3111,96 @@ static bool ParseBuffer(Buffer *buffer, std::string *err, const json &o,
     }
   }
 
-  if (is_binary) {
-    // Still binary glTF accepts external dataURI.
-    if (!buffer->uri.empty()) {
-      // First try embedded data URI.
-      if (IsDataURI(buffer->uri)) {
-        std::string mime_type;
-        if (!DecodeDataURI(&buffer->data, mime_type, buffer->uri, byteLength,
-                           true)) {
-          if (err) {
-            (*err) +=
-                "Failed to decode 'uri' : " + buffer->uri + " in Buffer\n";
+  if (resolve_data)
+  {
+      if (is_binary)
+      {
+          // Still binary glTF accepts external dataURI.
+          if (!buffer->uri.empty())
+          {
+              // First try embedded data URI.
+              if (IsDataURI(buffer->uri))
+              {
+                  std::string mime_type;
+                  if (!DecodeDataURI(&buffer->data, mime_type, buffer->uri, byteLength,
+                          true))
+                  {
+                      if (err)
+                      {
+                          (*err) +=
+                                  "Failed to decode 'uri' : " + buffer->uri + " in Buffer\n";
+                      }
+                      return false;
+                  }
+              }
+              else
+              {
+                  // External .bin file.
+                  if (!LoadExternalFile(&buffer->data, err, /* warn */ nullptr,
+                          buffer->uri, basedir, true, byteLength, true,
+                          fs))
+                  {
+                      return false;
+                  }
+              }
           }
-          return false;
-        }
-      } else {
-        // External .bin file.
-        if (!LoadExternalFile(&buffer->data, err, /* warn */ nullptr,
-                              buffer->uri, basedir, true, byteLength, true,
-                              fs)) {
-          return false;
-        }
-      }
-    } else {
-      // load data from (embedded) binary data
+          else
+          {
+              // load data from (embedded) binary data
 
-      if ((bin_size == 0) || (bin_data == nullptr)) {
-        if (err) {
-          (*err) += "Invalid binary data in `Buffer'.\n";
-        }
-        return false;
+              if ((bin_size == 0) || (bin_data == nullptr))
+              {
+                  if (err)
+                  {
+                      (*err) += "Invalid binary data in `Buffer'.\n";
+                  }
+                  return false;
+              }
+
+              if (byteLength > bin_size)
+              {
+                  if (err)
+                  {
+                      std::stringstream ss;
+                      ss << "Invalid `byteLength'. Must be equal or less than binary size: "
+                            "`byteLength' = "
+                              << byteLength << ", binary size = " << bin_size << std::endl;
+                      (*err) += ss.str();
+                  }
+                  return false;
+              }
+
+              // Read buffer data
+              buffer->data.resize(static_cast<size_t>(byteLength));
+              memcpy(&(buffer->data.at(0)), bin_data, static_cast<size_t>(byteLength));
+          }
       }
 
-      if (byteLength > bin_size) {
-        if (err) {
-          std::stringstream ss;
-          ss << "Invalid `byteLength'. Must be equal or less than binary size: "
-                "`byteLength' = "
-             << byteLength << ", binary size = " << bin_size << std::endl;
-          (*err) += ss.str();
-        }
-        return false;
+      else
+      {
+          if (IsDataURI(buffer->uri))
+          {
+              std::string mime_type;
+              if (!DecodeDataURI(&buffer->data, mime_type, buffer->uri, byteLength,
+                      true))
+              {
+                  if (err)
+                  {
+                      (*err) += "Failed to decode 'uri' : " + buffer->uri + " in Buffer\n";
+                  }
+                  return false;
+              }
+          }
+          else
+          {
+              // Assume external .bin file.
+              if (!LoadExternalFile(&buffer->data, err, /* warn */ nullptr, buffer->uri,
+                      basedir, true, byteLength, true, fs))
+              {
+                  return false;
+              }
+          }
       }
-
-      // Read buffer data
-      buffer->data.resize(static_cast<size_t>(byteLength));
-      memcpy(&(buffer->data.at(0)), bin_data, static_cast<size_t>(byteLength));
-    }
-
-  } else {
-    if (IsDataURI(buffer->uri)) {
-      std::string mime_type;
-      if (!DecodeDataURI(&buffer->data, mime_type, buffer->uri, byteLength,
-                         true)) {
-        if (err) {
-          (*err) += "Failed to decode 'uri' : " + buffer->uri + " in Buffer\n";
-        }
-        return false;
-      }
-    } else {
-      // Assume external .bin file.
-      if (!LoadExternalFile(&buffer->data, err, /* warn */ nullptr, buffer->uri,
-                            basedir, true, byteLength, true, fs)) {
-        return false;
-      }
-    }
   }
 
   ParseStringProperty(&buffer->name, err, o, "name", false);
@@ -4333,7 +4360,7 @@ bool TinyGLTF::LoadFromString(Model *model, std::string *err, std::string *warn,
         }
         Buffer buffer;
         if (!ParseBuffer(&buffer, err, it->get<json>(), &fs, base_dir,
-                         is_binary_, bin_data_, bin_size_)) {
+                         is_binary_, bin_data_, bin_size_, load_files_)) {
           return false;
         }
 
